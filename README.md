@@ -1,0 +1,3 @@
+# STMX
+
+Simple Terminal MultipleXer.
