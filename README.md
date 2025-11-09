@@ -1,3 +1,1 @@
-# STMX
-
-Simple Terminal MultipleXer.
+# Odin Game
