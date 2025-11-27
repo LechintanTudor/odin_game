@@ -1,34 +1,38 @@
 package game
 
-import "core:log"
-import "core:mem"
 import "core:slice"
 import sdl "vendor:sdl3"
 
-VERT_SPV :: #load("../build/geometry.vert.spv")
-FRAG_SPV :: #load("../build/geometry.frag.spv")
+@(private)
+SHAPE_VERT_SPV :: #load("../build/shape.vert.spv")
 
-Border_Type :: enum {
-	Outer,
-	Centered,
-	Inner,
-}
+@(private)
+SHAPE_FRAG_SPV :: #load("../build/shape.frag.spv")
 
 Shape_Renderer :: struct {
-	pipeline:        ^sdl.GPUGraphicsPipeline,
-	vert_shader:     ^sdl.GPUShader,
-	frag_shader:     ^sdl.GPUShader,
-	transfer_buffer: ^sdl.GPUTransferBuffer,
-	geometry_buffer: ^sdl.GPUBuffer,
-	buffer_size:     u32,
-	indexes_offset:  u32,
-	vertexes:        [dynamic]Shape_Vertex,
-	indexes:         [dynamic]u32,
+	pipeline:       ^sdl.GPUGraphicsPipeline,
+	vert_shader:    ^sdl.GPUShader,
+	frag_shader:    ^sdl.GPUShader,
+	buffer:         Gfx_Buffer,
+	indexes_offset: u32,
+	vertexes:       [dynamic]Shape_Vertex,
+	indexes:        [dynamic]u32,
+}
+
+Gfx_Draw_Shapes :: struct {
+	start: u32,
+	count: u32,
 }
 
 Shape_Vertex :: struct #min_field_align(16) {
 	position: Vec2,
 	color:    Color,
+}
+
+Border_Type :: enum {
+	Outer,
+	Centered,
+	Inner,
 }
 
 shape_renderer_create :: proc(
@@ -38,8 +42,8 @@ shape_renderer_create :: proc(
 	vert_shader := sdl.CreateGPUShader(
 		device,
 		{
-			code = raw_data(VERT_SPV),
-			code_size = len(VERT_SPV),
+			code = raw_data(SHAPE_VERT_SPV),
+			code_size = len(SHAPE_VERT_SPV),
 			entrypoint = "main",
 			format = {.SPIRV},
 			stage = .VERTEX,
@@ -52,8 +56,8 @@ shape_renderer_create :: proc(
 	frag_shader := sdl.CreateGPUShader(
 		device,
 		{
-			code = raw_data(FRAG_SPV),
-			code_size = len(FRAG_SPV),
+			code = raw_data(SHAPE_FRAG_SPV),
+			code_size = len(SHAPE_FRAG_SPV),
 			entrypoint = "main",
 			format = {.SPIRV},
 			stage = .FRAGMENT,
@@ -115,10 +119,6 @@ shape_renderer_create :: proc(
 		},
 	)
 
-	if pipeline == nil {
-		log.errorf("Failed to build pipeline: %v", sdl.GetError())
-	}
-
 	assert(pipeline != nil)
 
 	return {
@@ -135,10 +135,7 @@ shape_renderer_destroy :: proc(renderer: Shape_Renderer, device: ^sdl.GPUDevice)
 	sdl.ReleaseGPUShader(device, renderer.vert_shader)
 	sdl.ReleaseGPUShader(device, renderer.frag_shader)
 
-	if renderer.buffer_size != 0 {
-		sdl.ReleaseGPUTransferBuffer(device, renderer.transfer_buffer)
-		sdl.ReleaseGPUBuffer(device, renderer.geometry_buffer)
-	}
+	gfx_buffer_destroy(renderer.buffer, device)
 
 	delete(renderer.vertexes)
 	delete(renderer.indexes)
@@ -154,85 +151,15 @@ shape_renderer_upload :: proc(
 	device: ^sdl.GPUDevice,
 	copy_pass: ^sdl.GPUCopyPass,
 ) {
-	vertexes_size := len(renderer.vertexes) * size_of(Shape_Vertex)
-	indexes_offset := mem.align_forward_int(vertexes_size, align_of(u32))
-	indexes_size := len(renderer.indexes) * size_of(u32)
-	buffer_size := u32(indexes_offset + indexes_size)
-
-	if buffer_size > renderer.buffer_size {
-		sdl.ReleaseGPUTransferBuffer(device, renderer.transfer_buffer)
-		sdl.ReleaseGPUBuffer(device, renderer.geometry_buffer)
-
-		buffers_created_successfully := true
-
-		transfer_buffer := sdl.CreateGPUTransferBuffer(
-			device,
-			{usage = .UPLOAD, size = buffer_size},
-		)
-
-		if transfer_buffer == nil {
-			log.errorf("Failed to create transfer buffer: %v", sdl.GetError())
-			buffers_created_successfully = false
-		}
-
-		geometry_buffer := sdl.CreateGPUBuffer(
-			device,
-			{usage = {.INDEX, .VERTEX}, size = buffer_size},
-		)
-
-		if geometry_buffer == nil {
-			log.errorf("Failed to create buffer: %v", sdl.GetError())
-			buffers_created_successfully = false
-		}
-
-		if !buffers_created_successfully {
-			if transfer_buffer != nil {
-				sdl.ReleaseGPUTransferBuffer(device, transfer_buffer)
-			}
-
-			if geometry_buffer != nil {
-				sdl.ReleaseGPUBuffer(device, geometry_buffer)
-			}
-
-			renderer.transfer_buffer = nil
-			renderer.geometry_buffer = nil
-			renderer.buffer_size = 0
-			renderer.indexes_offset = 0
-			return
-		}
-
-		renderer.transfer_buffer = transfer_buffer
-		renderer.geometry_buffer = geometry_buffer
-		renderer.buffer_size = buffer_size
-		renderer.indexes_offset = u32(indexes_offset)
-	}
-
-	{
-		buffer := ([^]u8)(sdl.MapGPUTransferBuffer(device, renderer.transfer_buffer, true))
-
-		if buffer == nil {
-			log.errorf("Failed to map transfer buffer: %v", sdl.GetError())
-			return
-		}
-
-		dst_vertexes := slice.from_ptr(([^]Shape_Vertex)(buffer), len(renderer.vertexes))
-		copy(dst_vertexes, renderer.vertexes[:])
-
-		dst_indexes := slice.from_ptr(
-			([^]u32)(mem.ptr_offset(buffer, renderer.indexes_offset)),
-			len(renderer.indexes),
-		)
-		copy(dst_indexes, renderer.indexes[:])
-
-		sdl.UnmapGPUTransferBuffer(device, renderer.transfer_buffer)
-	}
-
-	sdl.UploadToGPUBuffer(
+	indexes_offset, _ := gfx_buffer_upload(
+		&renderer.buffer,
+		device,
 		copy_pass,
-		{transfer_buffer = renderer.transfer_buffer, offset = 0},
-		{buffer = renderer.geometry_buffer, size = buffer_size, offset = 0},
-		true,
+		renderer.vertexes[:],
+		renderer.indexes[:],
 	)
+
+	renderer.indexes_offset = indexes_offset
 }
 
 shape_renderer_bind :: proc(renderer: Shape_Renderer, pass: ^sdl.GPURenderPass) {
@@ -240,7 +167,7 @@ shape_renderer_bind :: proc(renderer: Shape_Renderer, pass: ^sdl.GPURenderPass) 
 
 	{
 		vert_binding := sdl.GPUBufferBinding {
-			buffer = renderer.geometry_buffer,
+			buffer = renderer.buffer.buffer,
 			offset = 0,
 		}
 
@@ -250,7 +177,7 @@ shape_renderer_bind :: proc(renderer: Shape_Renderer, pass: ^sdl.GPURenderPass) 
 
 	{
 		index_binding := sdl.GPUBufferBinding {
-			buffer = renderer.geometry_buffer,
+			buffer = renderer.buffer.buffer,
 			offset = renderer.indexes_offset,
 		}
 
@@ -261,10 +188,9 @@ shape_renderer_bind :: proc(renderer: Shape_Renderer, pass: ^sdl.GPURenderPass) 
 shape_renderer_draw :: proc(
 	renderer: Shape_Renderer,
 	pass: ^sdl.GPURenderPass,
-	start: u32,
-	count: u32,
+	command: Gfx_Draw_Shapes,
 ) {
-	sdl.DrawGPUIndexedPrimitives(pass, count, 1, start, 0, 0)
+	sdl.DrawGPUIndexedPrimitives(pass, command.count, 1, command.start, 0, 0)
 }
 
 gfx_draw_aabb :: proc(app: ^App, x, y, w, h: f32, color := COLOR_WHITE) {

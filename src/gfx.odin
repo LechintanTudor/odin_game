@@ -4,6 +4,7 @@ import "core:math/linalg"
 import sdl "vendor:sdl3"
 
 Vec2 :: distinct [2]f32
+Vec4 :: distinct [4]f32
 Color :: distinct [4]f32
 
 COLOR_WHITE: Color = {1, 1, 1, 1}
@@ -14,11 +15,7 @@ COLOR_YELLOW: Color = {1, 1, 0, 1}
 
 Gfx_Command :: union {
 	Gfx_Draw_Shapes,
-}
-
-Gfx_Draw_Shapes :: struct {
-	start: u32,
-	count: u32,
+	Gfx_Draw_Sprites,
 }
 
 gfx_start :: proc(app: ^App) {
@@ -33,7 +30,9 @@ gfx_end :: proc(
 	texture_w, texture_h: u32,
 ) {
 	copy_pass := sdl.BeginGPUCopyPass(command_buffer)
+	texture_manager_upload(&app.texture_manager, app.device, copy_pass)
 	shape_renderer_upload(&app.shape_renderer, app.device, copy_pass)
+	sprite_renderer_upload(&app.sprite_renderer, app.device, copy_pass)
 	sdl.EndGPUCopyPass(copy_pass)
 
 	color_target_info := sdl.GPUColorTargetInfo {
@@ -57,7 +56,14 @@ gfx_end :: proc(
 				shape_renderer_bind(app.shape_renderer, pass)
 			}
 
-			shape_renderer_draw(app.shape_renderer, pass, command.start, command.count)
+			shape_renderer_draw(app.shape_renderer, pass, command)
+
+		case Gfx_Draw_Sprites:
+			if set_if_different(&last_draw_command, typeid_of(Gfx_Draw_Sprites)) {
+				sprite_renderer_bind(app.sprite_renderer, pass)
+			}
+
+			sprite_renderer_draw(app.sprite_renderer, pass, command)
 		}
 	}
 

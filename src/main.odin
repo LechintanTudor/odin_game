@@ -1,16 +1,21 @@
 package game
 
 import "base:runtime"
+import "core:image"
+import _ "core:image/png"
 import "core:log"
 import "core:mem"
 import sdl "vendor:sdl3"
 
 App :: struct {
-	ctx:            runtime.Context,
-	window:         ^sdl.Window,
-	device:         ^sdl.GPUDevice,
-	gfx_commands:   [dynamic]Gfx_Command,
-	shape_renderer: Shape_Renderer,
+	ctx:             runtime.Context,
+	window:          ^sdl.Window,
+	device:          ^sdl.GPUDevice,
+	gfx_commands:    [dynamic]Gfx_Command,
+	texture_manager: Texture_Manager,
+	texture:         ^sdl.GPUTexture,
+	shape_renderer:  Shape_Renderer,
+	sprite_renderer: Sprite_Renderer,
 }
 
 app_init :: proc "c" (app_ptr: ^rawptr, argc: i32, argv: [^]cstring) -> sdl.AppResult {
@@ -51,12 +56,17 @@ app_init :: proc "c" (app_ptr: ^rawptr, argc: i32, argv: [^]cstring) -> sdl.AppR
 	app, _ := mem.new(App)
 
 	app^ = {
-		ctx            = context,
-		window         = window,
-		device         = device,
-		gfx_commands   = make([dynamic]Gfx_Command),
-		shape_renderer = shape_renderer_create(device, texture_format),
+		ctx             = context,
+		window          = window,
+		device          = device,
+		gfx_commands    = make([dynamic]Gfx_Command),
+		texture_manager = texture_manager_create(),
+		shape_renderer  = shape_renderer_create(device, texture_format),
+		sprite_renderer = sprite_renderer_create(device, texture_format),
 	}
+
+	image, err := image.load_from_file("images/lenna.png", {.alpha_add_if_missing})
+	app.texture = gfx_texture_create(app, image)
 
 	(^^App)(app_ptr)^ = app
 
@@ -94,6 +104,7 @@ app_iterate :: proc "c" (app: rawptr) -> sdl.AppResult {
 	gfx_start(app)
 	gfx_draw_aabb(app, 100, 100, 100, 100, {1, 0, 0, 0.2})
 	gfx_draw_aabb_border(app, 100, 100, 100, 100, 1, .Outer, {1, 0, 0, 1})
+	gfx_draw_texture(app, 0, 0, 100, 100, app.texture)
 	gfx_end(app, command_buffer, texture, texture_w, texture_h)
 
 	if !sdl.SubmitGPUCommandBuffer(command_buffer) {
@@ -124,7 +135,12 @@ app_quit :: proc "c" (app: rawptr, result: sdl.AppResult) {
 		return
 	}
 
+	texture_manager_destroy(app.texture_manager, app.device)
+	sdl.ReleaseGPUTexture(app.device, app.texture)
+
 	shape_renderer_destroy(app.shape_renderer, app.device)
+	sprite_renderer_destroy(app.sprite_renderer, app.device)
+
 	sdl.DestroyGPUDevice(app.device)
 	sdl.DestroyWindow(app.window)
 	mem.free(app)

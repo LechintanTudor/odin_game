@@ -5,7 +5,7 @@ layout(location = 1) in vec4 color;
 
 layout(location = 0) out vec4 out_color;
 
-layout(std140, set = 1, binding = 0) uniform projection_buffer {
+layout(set = 1, binding = 0) uniform projection_buffer {
     mat4 projection;
 };
 
